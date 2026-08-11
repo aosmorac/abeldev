@@ -1,0 +1,18 @@
+services:
+  abeldev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: abeldev-app
+    working_dir: /app/src
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=development
+      - HOST=0.0.0.0
+      - PORT=3003
+    volumes:
+      - ./src:/app/src
+      - /app/src/node_modules
+    command: npm run dev -- --host 0.0.0.0 --port 3003
+
