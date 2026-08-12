@@ -1,0 +1,492 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Abeldev production static site infrastructure
+
+Parameters:
+  Environment:
+    Type: String
+    Default: prod
+    AllowedValues:
+      - prod
+  DomainName:
+    Type: String
+    Default: abeldev.com
+    AllowedPattern: "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$"
+  EnableCustomDomain:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+  GitHubOrganization:
+    Type: String
+    Default: aosmorac
+    AllowedPattern: "^[A-Za-z0-9_.-]+$"
+  GitHubRepository:
+    Type: String
+    Default: abeldev
+    AllowedPattern: "^[A-Za-z0-9_.-]+$"
+
+Conditions:
+  CustomDomainEnabled: !Equals [!Ref EnableCustomDomain, "true"]
+  CustomDomainDisabled: !Not [!Condition CustomDomainEnabled]
+
+Resources:
+  HostedZone:
+    Type: AWS::Route53::HostedZone
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Name: !Ref DomainName
+      HostedZoneConfig:
+        Comment: Abeldev production public hosted zone
+      HostedZoneTags:
+        - Key: Project
+          Value: abeldev
+        - Key: Environment
+          Value: !Ref Environment
+
+  LegacyRootRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CustomDomainDisabled
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub "${DomainName}."
+      Type: A
+      TTL: 300
+      ResourceRecords:
+        - 192.0.78.24
+        - 192.0.78.25
+
+  LegacyWwwRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: CustomDomainDisabled
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub "www.${DomainName}."
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !Sub "${DomainName}."
+
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldNoncurrentVersions
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 60
+              NewerNoncurrentVersions: 5
+            Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: abeldev
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Surface
+          Value: web
+      VersioningConfiguration:
+        Status: Enabled
+
+  LogBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AccessControl: LogDeliveryWrite
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireAccessLogs
+            ExpirationInDays: 90
+            Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: abeldev
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Surface
+          Value: logs
+
+  SiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Description: Abeldev production S3 access
+        Name: !Sub "${AWS::StackName}-site-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  SiteDefaultCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Comment: Honor Abeldev HTML cache headers
+        DefaultTTL: 0
+        MaxTTL: 86400
+        MinTTL: 0
+        Name: !Sub "${AWS::StackName}-default-cache"
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+
+  SiteAssetCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Comment: Cache immutable Abeldev build assets
+        DefaultTTL: 31536000
+        MaxTTL: 31536000
+        MinTTL: 31536000
+        Name: !Sub "${AWS::StackName}-asset-cache"
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+
+  SiteSecurityHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Comment: Browser security headers for Abeldev
+        CustomHeadersConfig:
+          Items:
+            - Header: Permissions-Policy
+              Override: true
+              Value: accelerometer=(), autoplay=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()
+        Name: !Sub "${AWS::StackName}-security-headers"
+        SecurityHeadersConfig:
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests"
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          ReferrerPolicy:
+            Override: true
+            ReferrerPolicy: strict-origin-when-cross-origin
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 31536000
+            IncludeSubdomains: true
+            Override: true
+            Preload: true
+
+  CanonicalHostFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      AutoPublish: true
+      FunctionCode: !Sub |
+        function handler(event) {
+          var request = event.request;
+          var host = request.headers.host && request.headers.host.value
+            ? request.headers.host.value.toLowerCase()
+            : "";
+          if (host === "www.${DomainName}") {
+            return {
+              statusCode: 301,
+              statusDescription: "Moved Permanently",
+              headers: {
+                location: {
+                  value: "https://${DomainName}" + request.uri + queryString(request.querystring)
+                }
+              }
+            };
+          }
+          return request;
+        }
+        function queryString(query) {
+          var keys = Object.keys(query || {});
+          if (!keys.length) return "";
+          var values = [];
+          for (var index = 0; index < keys.length; index += 1) {
+            var key = keys[index];
+            var entry = query[key];
+            if (entry.multiValue && entry.multiValue.length) {
+              for (var valueIndex = 0; valueIndex < entry.multiValue.length; valueIndex += 1) {
+                values.push(encodeURIComponent(key) + "=" + encodeURIComponent(entry.multiValue[valueIndex].value));
+              }
+            } else {
+              values.push(encodeURIComponent(key) + "=" + encodeURIComponent(entry.value || ""));
+            }
+          }
+          return "?" + values.join("&");
+        }
+      FunctionConfig:
+        Comment: Redirect Abeldev www host to apex
+        Runtime: cloudfront-js-2.0
+      Name: !Sub "${AWS::StackName}-canonical-host"
+
+  SiteCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: CustomDomainEnabled
+    Properties:
+      DomainName: !Ref DomainName
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZone
+        - DomainName: !Sub "www.${DomainName}"
+          HostedZoneId: !Ref HostedZone
+      SubjectAlternativeNames:
+        - !Sub "www.${DomainName}"
+      Tags:
+        - Key: Project
+          Value: abeldev
+        - Key: Environment
+          Value: !Ref Environment
+      ValidationMethod: DNS
+
+  SiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases: !If
+          - CustomDomainEnabled
+          - - !Ref DomainName
+            - !Sub "www.${DomainName}"
+          - !Ref AWS::NoValue
+        CacheBehaviors:
+          - AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            CachePolicyId: !Ref SiteAssetCachePolicy
+            Compress: true
+            PathPattern: /assets/*
+            ResponseHeadersPolicyId: !Ref SiteSecurityHeadersPolicy
+            TargetOriginId: site-s3-origin
+            ViewerProtocolPolicy: redirect-to-https
+        Comment: Abeldev production portfolio
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 0
+            ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCachingMinTTL: 0
+            ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          CachePolicyId: !Ref SiteDefaultCachePolicy
+          Compress: true
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt CanonicalHostFunction.FunctionARN
+          ResponseHeadersPolicyId: !Ref SiteSecurityHeadersPolicy
+          TargetOriginId: site-s3-origin
+          ViewerProtocolPolicy: redirect-to-https
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        Logging:
+          Bucket: !GetAtt LogBucket.DomainName
+          IncludeCookies: false
+          Prefix: cloudfront/
+        Origins:
+          - DomainName: !GetAtt SiteBucket.RegionalDomainName
+            Id: site-s3-origin
+            OriginAccessControlId: !Ref SiteOriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        PriceClass: PriceClass_All
+        ViewerCertificate: !If
+          - CustomDomainEnabled
+          - AcmCertificateArn: !Ref SiteCertificate
+            MinimumProtocolVersion: TLSv1.2_2021
+            SslSupportMethod: sni-only
+          - CloudFrontDefaultCertificate: true
+      Tags:
+        - Key: Project
+          Value: abeldev
+        - Key: Environment
+          Value: !Ref Environment
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${SiteDistribution}"
+
+  SiteRootIpv4Record:
+    Type: AWS::Route53::RecordSet
+    Condition: CustomDomainEnabled
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt SiteDistribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub "${DomainName}."
+      Type: A
+
+  SiteRootIpv6Record:
+    Type: AWS::Route53::RecordSet
+    Condition: CustomDomainEnabled
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt SiteDistribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub "${DomainName}."
+      Type: AAAA
+
+  SiteWwwIpv4Record:
+    Type: AWS::Route53::RecordSet
+    Condition: CustomDomainEnabled
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt SiteDistribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub "www.${DomainName}."
+      Type: A
+
+  SiteWwwIpv6Record:
+    Type: AWS::Route53::RecordSet
+    Condition: CustomDomainEnabled
+    Properties:
+      AliasTarget:
+        DNSName: !GetAtt SiteDistribution.DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub "www.${DomainName}."
+      Type: AAAA
+
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrganization}/${GitHubRepository}:ref:refs/heads/prod"
+      Policies:
+        - PolicyName: !Sub "${AWS::StackName}-static-site-deploy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource: !GetAtt SiteBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub "${SiteBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                  - cloudfront:GetInvalidation
+                Resource: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${SiteDistribution}"
+      RoleName: !Sub "${AWS::StackName}-github-actions-deploy-role"
+      Tags:
+        - Key: Project
+          Value: abeldev
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  HostedZoneId:
+    Description: Route 53 public hosted zone identifier
+    Value: !Ref HostedZone
+  NameServers:
+    Description: Name servers to configure at the domain registrar
+    Value: !Join [",", !GetAtt HostedZone.NameServers]
+  SiteBucketName:
+    Description: Private S3 bucket used by the deployment workflow
+    Value: !Ref SiteBucket
+  LogBucketName:
+    Description: S3 bucket containing CloudFront access logs
+    Value: !Ref LogBucket
+  DistributionId:
+    Description: CloudFront distribution identifier
+    Value: !Ref SiteDistribution
+  DistributionDomainName:
+    Description: CloudFront domain available before custom DNS cutover
+    Value: !GetAtt SiteDistribution.DomainName
+  DeployRoleArn:
+    Description: GitHub Actions OIDC deployment role
+    Value: !GetAtt GitHubDeployRole.Arn
+  CertificateArn:
+    Description: ACM certificate used after custom domain activation
+    Condition: CustomDomainEnabled
+    Value: !Ref SiteCertificate
+  SiteUrl:
+    Description: Current public URL for the site
+    Value: !If
+      - CustomDomainEnabled
+      - !Sub "https://${DomainName}"
+      - !Sub "https://${SiteDistribution.DomainName}"
