@@ -21,10 +21,18 @@ Parameters:
     Type: String
     Default: aosmorac
     AllowedPattern: "^[A-Za-z0-9_.-]+$"
+  GitHubOrganizationId:
+    Type: String
+    Default: "4573471"
+    AllowedPattern: "^[0-9]+$"
   GitHubRepository:
     Type: String
     Default: abeldev
     AllowedPattern: "^[A-Za-z0-9_.-]+$"
+  GitHubRepositoryId:
+    Type: String
+    Default: "1330404968"
+    AllowedPattern: "^[0-9]+$"
 
 Conditions:
   CustomDomainEnabled: !Equals [!Ref EnableCustomDomain, "true"]
@@ -429,7 +437,7 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrganization}/${GitHubRepository}:ref:refs/heads/prod"
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubOrganization}@${GitHubOrganizationId}/${GitHubRepository}@${GitHubRepositoryId}:ref:refs/heads/prod"
       Policies:
         - PolicyName: !Sub "${AWS::StackName}-static-site-deploy"
           PolicyDocument:
