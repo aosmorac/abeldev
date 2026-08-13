@@ -202,7 +202,7 @@ Resources:
         Name: !Sub "${AWS::StackName}-security-headers"
         SecurityHeadersConfig:
           ContentSecurityPolicy:
-            ContentSecurityPolicy: "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests"
+            ContentSecurityPolicy: "default-src 'self'; base-uri 'self'; connect-src 'self' https://api.bigmelo.com; font-src 'self'; form-action 'self'; frame-ancestors 'none'; frame-src https://bigmelo.com; img-src 'self' data: https://bigmelo-prod-profiles-139194331469.s3.amazonaws.com; object-src 'none'; script-src 'self' https://bigmelo.com; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests"
             Override: true
           ContentTypeOptions:
             Override: true
